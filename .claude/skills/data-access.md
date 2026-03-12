@@ -1,0 +1,152 @@
+# Data Access Reference
+
+All skills that need financial data should follow this reference. Read `design-system.md` (in this same directory) for formatting, analytical density, and styling conventions.
+
+---
+
+## Section 1: Daloopa MCP Tools
+
+Check your available tools. If you see Daloopa MCP tools (`discover_companies`, `discover_company_series`, `get_company_fundamentals`, `search_documents`), MCP is available.
+
+| Operation | MCP Tool |
+|---|---|
+| Find company by ticker/name | `discover_companies(keywords=["TICKER"])` → returns `company_id`, `latest_calendar_quarter`, `latest_fiscal_quarter` |
+| Find available series/metrics | `discover_company_series(company_id, keywords, periods)` |
+| Pull financial data | `get_company_fundamentals(company_id, periods, series_ids)` |
+| Search SEC filings | `search_documents(keywords, company_ids, periods)` |
+
+Results come back as structured data you can use directly.
+
+If MCP is not available, check for API credentials (`recipes/daloopa_client.py` + `.env` with `DALOOPA_EMAIL` and `DALOOPA_API_KEY`). If so, use recipe scripts:
+
+| Operation | Recipe Command |
+|---|---|
+| Find company by ticker/name | `python recipes/company_fundamentals.py TICKER` |
+| Find series + pull data | `python recipes/company_fundamentals.py TICKER PERIOD1 PERIOD2 ...` |
+| Search SEC filings | `python recipes/document_search.py "KEYWORDS" --companies TICKER1 TICKER2` |
+
+If neither MCP nor API is available, tell the user to run `/setup`.
+
+## Section 1.5: Period Determination
+
+After `discover_companies`, capture `latest_calendar_quarter` and `latest_fiscal_quarter`. Use `latest_calendar_quarter` to calculate all period arrays:
+
+| Skill Need | Calculation |
+|---|---|
+| Last 4 quarters | Work backward 4Q from `latest_calendar_quarter` |
+| Last 8 quarters | Work backward 8Q from `latest_calendar_quarter` |
+| Last 10 quarters | Work backward 10Q from `latest_calendar_quarter` |
+| Last 4Q + YoY | 8 quarters: latest 4 + same 4 one year prior |
+| Document search (recent) | Latest 2 quarters from `latest_calendar_quarter` |
+
+Example: if `latest_calendar_quarter` = "2025Q4", last 8Q = ["2024Q1", "2024Q2", "2024Q3", "2024Q4", "2025Q1", "2025Q2", "2025Q3", "2025Q4"]
+
+**NEVER assume the current calendar date determines the latest available quarter — always use the field returned by `discover_companies`.**
+
+### Fiscal Year Context
+
+Note that `get_company_fundamentals` returns both `calendar_period` and `fiscal_period` for each data point.
+
+- **Single-company analysis** (tearsheet, earnings, guidance-tracker, bull-bear, etc.): Note the company's fiscal year end and use `fiscal_period` labels when presenting data (e.g., "FQ1'26" for Apple's Oct-Dec quarter).
+- **Multi-company comparison** (industry, comps, comp-sheet): Use `calendar_period` labels to normalize across different fiscal year ends.
+- **API input is always calendar quarters** — never pass `latest_fiscal_quarter` values to the API. Fiscal notation (e.g., "FQ2'25") will be misinterpreted. Always calculate period arrays from `latest_calendar_quarter`.
+
+## Section 2: External Market Data
+
+Skills that need market-side data should gather the following:
+
+| Data Need | What to Get |
+|---|---|
+| **Stock quote** | Current price, market cap, shares outstanding, beta |
+| **Trading multiples** | Trailing P/E, Forward P/E, EV/EBITDA, P/S, P/B, dividend yield |
+| **Historical prices** | OHLCV data for trend analysis (1-5 years) |
+| **Peer multiples** | Side-by-side trading multiples for 5-10 comparable companies |
+| **Risk-free rate** | 10Y Treasury yield (for WACC/DCF calculations) |
+
+**Resolution order — use the first available source:**
+
+1. **MCP tools** — Check your available tools for any MCP server that provides market data (stock quotes, multiples, historical prices). Use whatever the user has configured. This is the preferred path because it requires no local dependencies.
+2. **Infra scripts** (project repo only) — If no market-data MCP is available but `infra/market_data.py` exists, use it as a fallback (see Section 5 for commands).
+3. **Web search** — If neither MCP nor infra scripts are available, use web search to look up current stock price and key multiples.
+4. **Defaults** — If no market data source is available at all, use reasonable defaults (beta=1.0, risk-free rate=4.5%) and note the limitation. Proceed with Daloopa fundamentals only.
+
+## Section 3: Consensus Estimates (Optional)
+
+When available, consensus analyst estimates add valuable context. Look for:
+
+| Data Need | Use Case |
+|---|---|
+| **Consensus revenue / EPS** | Beat/miss analysis vs. Street expectations |
+| **Forward estimates (NTM)** | Forward P/E, forward EV/EBITDA for comps |
+| **Estimate revisions** | Trend in analyst expectations (up/down/stable) |
+| **Price targets** | Consensus target and range for context |
+
+If consensus data is not available, skip these sections and note "consensus data not available" rather than guessing.
+
+## Section 4: Citation Requirements (MANDATORY)
+
+**Every financial figure sourced from Daloopa MUST include a citation link.** This is non-negotiable.
+
+Format: `[$X.XX million](https://daloopa.com/src/{fundamental_id})`
+
+The `fundamental_id` (or `id`) is returned in every `get_company_fundamentals` response and in every API recipe result. You must:
+
+1. **Capture the `fundamental_id` at data-pull time** — when you call `get_company_fundamentals` or parse recipe output, record the `id` for every value
+2. **Carry the ID through to output** — when building tables, prose, or context JSON, attach the citation link to every Daloopa-sourced number
+3. **Never drop citation IDs** — if a value came from Daloopa, it gets a link. No exceptions. Computed values (e.g., margins, growth rates) derived from Daloopa figures should cite the underlying inputs
+4. **Document citations** — when quoting SEC filings from `search_documents`, link to: `[Document Name](https://marketplace.daloopa.com/document/{document_id})`
+
+If you output a financial figure without a citation, it cannot be verified. Uncitable numbers are useless to an analyst.
+
+## Section 4.5: Firm Attribution
+
+Every output (HTML report, Word document, Excel model, pitch deck) must display "Prepared by {FIRM_NAME}":
+- **Default**: "Daloopa"
+- **User override**: If the user specifies a firm name in their prompt (e.g., "use firm name Acme Capital"), use that instead
+- **NEVER hallucinate a firm name** (Goldman Sachs, Morgan Stanley, JPMorgan, etc.). If no firm name is provided, use "Daloopa". Period.
+
+For HTML reports, the footer reads: `Prepared by {FIRM_NAME} | Data sourced from Daloopa`
+For Word documents, include firm name on the cover page and in document headers.
+For Excel models, include firm name on the cover/summary tab.
+For pitch decks, include firm name on the cover slide and in slide footers.
+
+---
+
+## Section 5: Infrastructure Tools (Project Repo Only)
+
+The following tools are available in the project repo environment. If these scripts are not available (e.g., in a plugin context), skip these steps — the skill's core analysis works without them.
+
+### Market Data Scripts (Fallback)
+
+If no MCP provides market data, use these scripts as a fallback:
+
+| Operation | Command |
+|---|---|
+| Current quote (price, mkt cap, beta) | `python infra/market_data.py quote TICKER` |
+| Trading multiples (P/E, EV/EBITDA, etc.) | `python infra/market_data.py multiples TICKER` |
+| Historical OHLCV | `python infra/market_data.py history TICKER --period 2y` |
+| Peer multiples comparison | `python infra/market_data.py peers TICKER1 TICKER2 ...` |
+| Risk-free rate (10Y Treasury) | `python infra/market_data.py risk-free-rate` |
+
+All commands output JSON to stdout.
+
+### Charts
+
+For chart generation: `python infra/chart_generator.py {chart_type} --data '{json}' --output path.png`
+
+Available chart types: `time-series`, `waterfall`, `football-field`, `pie`, `scenario-bar`, `dcf-sensitivity`
+
+### Projections
+
+For forward financial projections: `python infra/projection_engine.py --context input.json --output projections.json`
+
+### HTML Report Output (Building Block Skills)
+
+Building block skills generate styled HTML directly using the template in `design-system.md`. No external scripts needed — the HTML file IS the deliverable. Save to: `reports/{TICKER}_{skill}.html`
+
+### Word / Excel / Comp Sheet Rendering
+
+- Word documents: `python infra/docx_renderer.py --template templates/research_note.docx --context context.json --output output.docx`
+- Excel models: `python infra/excel_builder.py --context context.json --output output.xlsx`
+- Comp sheet models: `python3 infra/comp_builder.py --context context.json --output output.xlsx`
+- Context diffs: `python infra/report_differ.py --old old.json --new new.json --output diff.json`
